@@ -15,15 +15,13 @@ from fast_mc import MotionCone
 class MotionPlanner:
     def __init__(self, N_steps, m = 500/1000, g=9.81, 
                 initial_state=np.array([0,0,0]), 
-                goal_state=np.array([0.2,0.3,-0.0]), eps_goal = 0.007, dt = 1, r = 1/100, mu_s = 0.9,
-                N_gripper = 100, mu = 0.9, d = 5/100, w = 10/100 ):
+                goal_state=np.array([0.2,0.3,-0.0]), r = 1/100, mu_s = 0.9,
+                N_gripper = 50, mu = 0.9, d = 5/100, w = 10/100 ):
         # Initialize parameters
         self.m = m
         self.g = g
         self.initial_state = initial_state
         self.goal_state = goal_state
-        self.eps_goal = eps_goal
-        self.dt = dt
         self.callback_iteration = 0
 
         self.r = r
@@ -49,7 +47,16 @@ class MotionPlanner:
 
         self.MC_solver = MotionCone()
         self.MC_solver.get_functions()
-        #self.MC_bad = MotionConeBad()
+
+        #in theory this should give me the possibility to include multiple pushers
+        #self.wall_orientations = [0]
+        #self.wall_orientations = [np.pi/2]
+        self.wall_orientations = [-np.pi/2]
+        #self.wall_orientations = [-np.pi,np.pi/2]
+        
+        self.initialize_parameters()
+    
+    def initialize_parameters(self):
 
         self.a = -1/(self.mu_s*self.N_gripper)
         self.b = self.m*self.g*self.a
@@ -61,10 +68,17 @@ class MotionPlanner:
         self.f_r = [np.cos(np.pi/2-math.atan(self.mu)), np.sin(np.pi/2-math.atan(self.mu))]
         self.f_l = [-np.cos(np.pi/2-math.atan(self.mu)), np.sin(np.pi/2-math.atan(self.mu))]
 
-        self.wp1_r = np.dot(self.J_p1, self.f_r)
-        self.wp1_l = np.dot(self.J_p1, self.f_l)
-        self.wp2_r = np.dot(self.J_p2, self.f_r)
-        self.wp2_l = np.dot(self.J_p2, self.f_l)
+
+    def apply_jacobian_rotation(self, theta_rad):
+
+        R_y = np.array([[np.cos(theta_rad), -np.sin(theta_rad), 0],
+                        [np.sin(theta_rad), np.cos(theta_rad), 0],
+                        [0, 0, 1]])
+        wp1_r = np.dot(R_y@self.J_p1, self.f_r)
+        wp1_l = np.dot(R_y@self.J_p1, self.f_l)
+        wp2_r = np.dot(R_y@self.J_p2, self.f_r)
+        wp2_l = np.dot(R_y@self.J_p2, self.f_l)
+        return wp1_r, wp1_l, wp2_r, wp2_l
         
     def compute_rigid_transform(self, x):
         # Compute rigid transform from world to object frame
@@ -80,12 +94,9 @@ class MotionPlanner:
         J_s = self.compute_rigid_transform(x)
 
        
-        
-        R_y = np.array([[np.cos(theta_rad), -np.sin(theta_rad), 0],
-                        [np.sin(theta_rad), np.cos(theta_rad), 0],
-                        [0, 0, 1]])
-       
-        wrench_cone = np.vstack([self.wp1_r, self.wp1_l, self.wp2_r, self.wp2_l])
+        wp1_r, wp1_l, wp2_r, wp2_l = self.apply_jacobian_rotation(theta_rad)
+
+        wrench_cone = np.vstack([wp1_r, wp1_l, wp2_r, wp2_l])
 
         sol = []
         for edge_wrench in wrench_cone:
@@ -230,18 +241,18 @@ class MotionPlanner:
             current_state = np.array([x, z, w])
             current_twist = np.array([v_x, v_z, v_w])
         # Compute motion cones for the given state and orientations of the wall. for now zero
-        
-            motion_cones_i, _ = self.get_motionCones(current_state, theta_rad=0, vel_i= np.array([v_x,v_z,v_w]))  # Implement this function
-            #motion_cones_i  = ConvexHull(np.array([[1,0,1],[1,-1,1],[-1,1,0+self.cnt],[-1,-1,-1]]))
-            for equation in motion_cones_i.equations:
-                a = equation[:-1]  # Coefficients a1, a2, ..., an
-                b = equation[-1]   # Constant term b
+            for theta_rad in self.wall_orientations:
+                motion_cones_i, _ = self.get_motionCones(current_state, theta_rad = theta_rad, vel_i = np.array([v_x,v_z,v_w]))  # Implement this function
+                #motion_cones_i  = ConvexHull(np.array([[1,0,1],[1,-1,1],[-1,1,0+self.cnt],[-1,-1,-1]]))
+                for equation in motion_cones_i.equations:
+                    a = equation[:-1]  # Coefficients a1, a2, ..., an
+                    b = equation[-1]   # Constant term b
 
-                # Constructing inequality: a1*x1 + a2*x2 + ... + an*xn + b <= 0
-                #inequality = {"type": "ineq", "fun": lambda x, a=a, b=b: np.dot(a, x) - b}
-                inequality = self.cumput_hp(a, b, current_twist)
+                    # Constructing inequality: a1*x1 + a2*x2 + ... + an*xn + b <= 0
+                    #inequality = {"type": "ineq", "fun": lambda x, a=a, b=b: np.dot(a, x) - b}
+                    inequality = self.cumput_hp(a, b, current_twist)
 
-                inequalities.append(inequality)
+                    inequalities.append(inequality)
 
       
         return inequalities
