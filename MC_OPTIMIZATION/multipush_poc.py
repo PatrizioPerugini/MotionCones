@@ -15,7 +15,7 @@ np.set_printoptions(precision=4,linewidth=np.inf, suppress=True)
 class MotionPlanner:
     def __init__(self, N_steps, m = 500/1000, g=9.81, 
                 initial_state=np.array([0,0,0]), 
-                goal_state=np.array([0.2,0.3,-0.0]), r = 1/100, mu_s = 0.9,
+                goal_state=np.array([0.2,0.3,-0.0]), wall_orientations = [0, np.pi/2, -np.pi/2],  r = 1/100, mu_s = 0.9,
                 N_gripper = 50, mu = 0.9, d = 5/100, w = 10/100 ):
         # Initialize parameters
         self.m = m
@@ -46,9 +46,8 @@ class MotionPlanner:
         self.MC_solver.get_functions()
 
         #in theory this should give me the possibility to include multiple pushers
-        #self.wall_orientations = [0]
-        #self.wall_orientations = [np.pi/2]
-        self.wall_orientations = [0,-np.pi/2, np.pi/2]#, np.pi]
+ 
+        self.wall_orientations = wall_orientations
         self.N_pushers = len(self.wall_orientations)
 
         #self.wall_orientations = [-np.pi,np.pi/2]
@@ -66,7 +65,9 @@ class MotionPlanner:
 
         self.f_r = [np.cos(np.pi/2-math.atan(self.mu)), np.sin(np.pi/2-math.atan(self.mu))]
         self.f_l = [-np.cos(np.pi/2-math.atan(self.mu)), np.sin(np.pi/2-math.atan(self.mu))]
-
+        
+        #self.f_r = [self.mu,1]
+        #self.f_l = [-self.mu,1] 
 
     def apply_jacobian_rotation(self, theta_rad):
 
@@ -204,18 +205,13 @@ class MotionPlanner:
         dist_xz = np.linalg.norm(np.array([p_n_x, p_n_z]) - self.goal_state[0:2])
         dist_w = np.linalg.norm(np.array([p_n_w]) - self.goal_state[2])
         dist = 0.2*dist_w + 0.8*dist_xz
-        #entropy = 0
-        #for t in range(self.N_steps*self.N_pushers):
-        #
-        #        entropy+=c[t]*np.log(c[t])
-        entropy_cost = sum(c[t] * np.log(c[t]) for t in range(self.N_steps * self.N_pushers) if c[t] != 0)
-        #print("costo entropia", entropy_cost)
 
-        lambda_e = 0.2
-        #think of adding a term on the entropy as equality constraint to enshure that the problem actually converges
+        entropy_cost = sum(c[t] * np.log(c[t]) for t in range(self.N_steps * self.N_pushers) if c[t] != 0)
+
+        lambda_e = 0.01#0.005
         kl_term = np.sum(self.kl_divergence(c))
         lamda_kl = 0.00001
-        return   (1-lambda_e)*dist - lambda_e*entropy_cost - lamda_kl*kl_term
+        return   (1-lambda_e)*dist - lambda_e*entropy_cost #- lamda_kl*kl_term
 
     def eq_constraints(self, vars):
         
@@ -229,19 +225,6 @@ class MotionPlanner:
             c_m+=c[n]
             if n==self.N_steps*self.N_pushers -1:
                 constraints.append(c_m -1)
-
-        #constraints = []
-        ## Calculate cumulative sums and add constraints
-        #c_m = 0
-        #for n in range(self.N_steps * self.N_pushers):
-        #    if n % self.N_pushers == 0 and n != 0:
-        #        constraints.append({'type': 'eq', 'fun': lambda x, c_m=c_m: c_m - 1})
-        #        c_m = 0
-        #    c_m += c[n]
-        #if c_m != 0:  # Add constraint for the last group if it's not zero
-        #    constraints.append({'type': 'eq', 'fun': lambda x, c_m=c_m: c_m - 1})
-        #print("ORCACCIO DUIOOOOOOOOOOOOOJHOIK")
-
 
         return np.array(constraints)
     
@@ -271,26 +254,24 @@ class MotionPlanner:
             inequalities.extend([-self.d/10-z])
             return inequalities
     
-    def sigmoid(self,z):
-        z_ = z%.1
-        return 1 / (1 + np.exp(-100 * (z_ - 0.03)))
+    #center it where needed -> need to be generalized
+    def sigmoid(self,x):
+        x_ = x%.1
+        return 1 / (1 + np.exp(-300 * (x + 0.02)))
 
+    #TODO compute the constraints in a class object, to extend to multiple objects shape
     def get_t_constraints(self, x, z, constraints):
-        c = self.sigmoid(z)
 
-        epsilon = 1e-3  # Small epsilon value to avoid numerical issues
-        
-        # Constraints activated by sigmoid
-        constraints.extend([c * (-x + 0.02 - epsilon)])       # -x < 0.02 when c is close to 1
-        constraints.extend([c * (x + 0.02 - epsilon)])        # x < 0.02 when c is close to 1
-        constraints.extend([c * (-z + 0.05 - epsilon)])       # -z < 0.05 when c is close to 1
-        constraints.extend([c * (z - 0.02 - epsilon)])        # z < 0.02 when c is close to 1
+        c = self.sigmoid(x)
+        epsilon = 0.003
+        a = 0.015  - epsilon
+        b = 0.05   - epsilon
+  
+        #using the soft constraint
+        constraints.extend([c*(z+a)*(-z+a)+(1-c)*(z+b)*(-z+b)])
+        constraints.extend([x + 0.05])
+        constraints.extend([-x + 0.05])        
 
-        # Constraints deactivated by sigmoid
-        constraints.extend([(1 - c) * (x + 0.05 + epsilon)])  # x < -0.05 when c is close to 0
-        constraints.extend([(1 - c) * (-x + 0.05 + epsilon)]) # -x < 0.05 when c is close to 0
-        constraints.extend([(1 - c) * (z + 0.05 + epsilon)])  # z < -0.05 when c is close to 0
-        constraints.extend([(1 - c) * (-z + 0.05 + epsilon)]) 
 
         return constraints
 
@@ -317,22 +298,11 @@ class MotionPlanner:
 
             # SQUARE INEQUALITIES
             #inequalities = self.get_square_const(inequalities)
-            
+       
             # T-SHAPE INEQUALITIES -> dim of t are: 4 and 10 for bases 3 and 7 for height (incavata in 10x10 square)
             #inequalities = self.get_square_const(x, z, inequalities)
-            #inequalities = self.get_t_constraints(x, z, inequalities)
-        #    if x > -0.02:
-        #        inequalities.extend([-( -x - 0.02) ])       
-        #        inequalities.extend([-( x - 0.05 )])        
-        #        inequalities.extend([-( -z - 0.010 )])#0.015      
-        #        inequalities.extend([-( z - 0.010)]) #0.015
-        #    else: 
-        #        inequalities.extend([-(x + 0.02 )])  
-        #        inequalities.extend([-(-x - 0.05) ]) 
-        #        inequalities.extend([-(z - 0.05 )])  
-        #        inequalities.extend([-(-z - 0.05) ]) 
-                
-
+            inequalities = self.get_t_constraints(x, z, inequalities)
+            
           
         # Compute motion cones for the given state and orientations of the wall. for now zero
             for j,theta_rad in enumerate(self.wall_orientations):
@@ -431,9 +401,20 @@ class MotionPlanner:
         self.callback_iteration += 1
 
 
+    def vels_ig(self, T_ig):
+        delta_v = (self.goal_state-self.initial_state)/T_ig
+        ddv = delta_v#/(self.N_pushers-1)
+        #print(ddv)
+        
+        return ddv
+
+
+
     def get_ig(self):
         T_ig = 0.1
-        initial_guess = [T_ig] + [-0.] *3*self.N_steps*self.N_pushers + [1/self.N_pushers]*self.N_steps*self.N_pushers
+        ddv = self.vels_ig(T_ig)
+        initial_guess = [T_ig] + [ddv[0]]*self.N_steps*self.N_pushers + [ddv[1]]*self.N_steps*self.N_pushers + [ddv[2]]*self.N_steps*self.N_pushers +  [1/self.N_pushers]*self.N_steps*self.N_pushers
+        #initial_guess = [T_ig] + [-0.] *3*self.N_steps*self.N_pushers + [1/self.N_pushers]*self.N_steps*self.N_pushers
         return  initial_guess
 
 
@@ -449,7 +430,7 @@ class MotionPlanner:
         constraints = [{'type': 'eq', 'fun': self.eq_constraints},
                    {'type': 'ineq', 'fun': self.ineq_constraints}]
         #options = {'maxiter': 190, 'disp': True, 'ftol':1e-4, 'gtol':1e-1, 'maxfev' :5000}
-        options = {'maxiter': 77, 'disp': True, 'ftol':1e-7}#1e-7
+        options = {'maxiter': 200, 'disp': True, 'ftol':1e-7}#1e-7
         result = minimize(self.objective_function, initial_guess, constraints=constraints, bounds=bounds, options=options, 
                             callback=self.callback_func, method='SLSQP')
         

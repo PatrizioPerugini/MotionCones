@@ -3,15 +3,14 @@ import numpy as np
 from utils import plot_solution
 from multipush_poc import MotionPlanner
 def main():
-    N_steps = 3#7
-    start_position = np.array([-0.02, -0.02, 0.0])
-    goal_position = np.array([-0.03, 0.01, -0.2])
-    #start_position = np.array([-0.0, -0.0, 0.0])
-    #goal_position = np.array([-0.03, -0.01, -0.2])
+    N_steps = 3#4#7
 
-    #start_position = np.array([0.0, -0.0, 0.0])
-    #goal_position = np.array([0.04, 0.02, -0.2])
+
+    start_position = np.array([0.022, 0.01, -0.])
+    goal_position = np.array([-0.04, -0.02, -0.])
     
+
+
     planner = MotionPlanner(N_steps = N_steps ,initial_state = start_position, goal_state = goal_position)
     initial_guess = planner.get_ig()
     print(initial_guess)
